@@ -31,7 +31,7 @@ Claude produces genuinely long, structured responses. Over a working session the
 **Requirements:** Node 18+, Chrome (or any Chromium browser)
 
 ```bash
-git clone https://github.com/you/chat-organizer.git
+git clone https://github.com/WarmestDoughnut/chat-organizer.git
 cd chat-organizer
 npm install
 ```
