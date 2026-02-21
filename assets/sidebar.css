@@ -1,0 +1,130 @@
+/* sidebar.css — scoped inside the extension's shadow DOM */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+.sidebar {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100vh;
+  width: 280px;
+  background: #1e1e2e;
+  color: #cdd6f4;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: -2px 0 12px rgba(0, 0, 0, 0.4);
+  z-index: 2147483647;
+  transition: width 0.2s ease;
+}
+
+.sidebar--collapsed {
+  width: 36px;
+}
+
+.sidebar--collapsed .sidebar__body {
+  display: none;
+}
+
+.sidebar--collapsed .sidebar__header {
+  justify-content: center;
+  border-bottom: none;
+  padding: 12px 4px;
+}
+
+.sidebar__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 10px;
+  border-bottom: 1px solid #313244;
+  flex-shrink: 0;
+}
+
+.sidebar__title {
+  font-weight: 600;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.sidebar--collapsed .sidebar__title {
+  display: none;
+}
+
+.sidebar__toggle {
+  background: none;
+  border: none;
+  color: #cdd6f4;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.sidebar__toggle:hover {
+  background: #313244;
+}
+
+.sidebar__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+
+/* ── Outline list ──────────────────────────────────────────────────────────── */
+
+.outline-list {
+  list-style: none;
+}
+
+.outline-item {
+  border-bottom: 1px solid #181825;
+}
+
+.outline-item__btn {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  color: #cdd6f4;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+  /* Clamp to two lines with ellipsis */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+
+.outline-item__btn:hover {
+  background: #313244;
+  color: #89b4fa;
+}
+
+.outline-item__btn:active {
+  background: #45475a;
+}
+
+/* ── Empty / placeholder state ─────────────────────────────────────────────── */
+
+.outline-panel__placeholder {
+  color: #6c7086;
+  font-style: italic;
+  text-align: center;
+  margin-top: 24px;
+  padding: 0 12px;
+}
