@@ -119,6 +119,131 @@
   background: #45475a;
 }
 
+/* ── Rank-based hierarchy ──────────────────────────────────────────────────── */
+
+.outline-item__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* Rank 1 — top-level header */
+.outline-item--rank1 > .outline-item__row > .outline-item__btn {
+  font-weight: 600;
+  color: #cba6f7;
+  font-size: 12px;
+  padding: 9px 12px 9px 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Rank 2 — subheader */
+.outline-item--rank2 > .outline-item__row > .outline-item__btn {
+  font-weight: 500;
+  color: #89dceb;
+  font-size: 12px;
+  padding: 7px 12px 7px 20px;
+}
+
+/* Rank 3 — leaf */
+.outline-item--rank3 > .outline-item__row > .outline-item__btn {
+  color: #cdd6f4;
+  font-size: 12px;
+  padding: 6px 12px 6px 28px;
+}
+
+/* ── Expand / collapse toggle ──────────────────────────────────────────────── */
+
+.outline-item__expand {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: #6c7086;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 4px 0 8px;
+  line-height: 1;
+  transition: color 0.1s ease;
+}
+
+.outline-item__expand:hover {
+  color: #cdd6f4;
+}
+
+/* ── Count badge ───────────────────────────────────────────────────────────── */
+
+.outline-item__badge {
+  flex-shrink: 0;
+  margin-right: 10px;
+  background: #313244;
+  color: #a6adc8;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 10px;
+  min-width: 18px;
+  text-align: center;
+}
+
+/* ── Individual message items ──────────────────────────────────────────────── */
+
+.outline-list--messages {
+  list-style: none;
+}
+
+.outline-item--message {
+  border-bottom: 1px solid #11111b;
+}
+
+.outline-item__btn--message {
+  display: block;
+  width: 100%;
+  padding: 5px 12px 5px 36px;
+  background: none;
+  border: none;
+  color: #7f849c;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+  /* Clamp to one line */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 0.1s ease, background 0.1s ease;
+}
+
+.outline-item__btn--message::before {
+  content: '↳ ';
+  color: #45475a;
+}
+
+.outline-item__btn--message:hover {
+  color: #cdd6f4;
+  background: #1e1e2e;
+}
+
+/* ── Settings shortcut button ──────────────────────────────────────────────── */
+
+.outline-settings-btn {
+  display: block;
+  margin: 12px auto 0;
+  padding: 6px 14px;
+  background: #313244;
+  border: 1px solid #45475a;
+  border-radius: 6px;
+  color: #cdd6f4;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+
+.outline-settings-btn:hover {
+  background: #45475a;
+}
+
 /* ── Empty / placeholder state ─────────────────────────────────────────────── */
 
 .outline-panel__placeholder {
@@ -127,4 +252,6 @@
   text-align: center;
   margin-top: 24px;
   padding: 0 12px;
+  line-height: 1.6;
+  font-size: 12px;
 }

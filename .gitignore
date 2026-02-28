@@ -1,3 +1,13 @@
 node_modules/
 .output/
 .wxt/
+
+# Personal session logs — never commit
+WORKLOG.txt
+CLAUDE.md
+
+# Hard block on any env / secrets file — belt-and-suspenders
+.env
+.env.*
+*.env
+secrets.*

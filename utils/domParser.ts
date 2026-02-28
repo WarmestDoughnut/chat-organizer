@@ -5,7 +5,8 @@
 export interface ParsedMessage {
   index: number;
   role: 'user' | 'assistant';
-  headingText: string;
+  headingText: string; // first sentence, ≤120 chars — used for embedding
+  fullText: string;    // complete visible text — used for escalation scan
   element: Element;
 }
 
@@ -15,12 +16,17 @@ const MIN_TEXT_LENGTH = 60;
 
 // Ordered list of selectors to locate assistant message containers.
 // Each entry is tried in sequence; the first that returns nodes wins.
+// Keep most-specific first; update here when claude.ai changes its markup.
 const ASSISTANT_SELECTORS = [
+  // claude.ai circa 2024-2025
   '[data-testid="ai-turn"]',
   '[data-testid="assistant-message"]',
-  '[data-is-streaming]',
-  // Fallback: any article/section whose aria role hints at assistant output
-  '[role="presentation"] + [role="presentation"]',
+  // claude.ai circa 2025-2026
+  '[data-message-author-role="assistant"]',
+  '[data-role="assistant"]',
+  // Generic semantic fallbacks
+  'article[data-role]',
+  '[data-is-streaming="false"]',
 ];
 
 // Ordered list of selectors to find the scrollable conversation container
@@ -29,6 +35,7 @@ const CONTAINER_SELECTORS = [
   '[data-testid="conversation-turn-list"]',
   '[data-testid="virtuoso-item-list"]',
   '[data-testid="chat-messages-container"]',
+  '[data-testid="conversation-content"]',
   'main',
   '[role="main"]',
 ];
@@ -59,13 +66,26 @@ export function parseMessages(): ParsedMessage[] {
   }
 
   if (!elements || elements.length === 0) {
-    console.warn('[Chat Organizer] No assistant messages found. Check ASSISTANT_SELECTORS in domParser.ts.');
+    // Diagnostic: log all unique data-testid values visible on the page
+    const testIds = [...new Set(
+      [...document.querySelectorAll('[data-testid]')].map(e => e.getAttribute('data-testid')),
+    )].filter(Boolean).sort();
+    console.warn(
+      '[Chat Organizer] No assistant messages found. data-testid values on page:',
+      testIds.join(', ') || '(none)',
+    );
     return [];
   }
 
   const results: ParsedMessage[] = [];
 
   elements.forEach((el, index) => {
+    // When the streaming fallback is used, all conversation turns are matched
+    // (user + assistant). Filter to assistant turns only by looking for DOM
+    // features exclusive to assistant responses: code blocks, multiple action
+    // buttons (copy/retry), or a prose-rendered markdown wrapper.
+    if (matchedSelector === '[data-is-streaming="false"]' && !isLikelyAssistantTurn(el)) return;
+
     const text = extractVisibleText(el);
     if (text.length < MIN_TEXT_LENGTH) return;
 
@@ -73,12 +93,27 @@ export function parseMessages(): ParsedMessage[] {
       index,
       role: 'assistant',
       headingText: extractFirstSentence(text),
+      fullText: text,
       element: el,
     });
   });
 
   console.log(`[Chat Organizer] Parsed ${results.length} heading(s) via "${matchedSelector}"`);
   return results;
+}
+
+// Heuristic to distinguish assistant turns from user turns when the only
+// available selector ([data-is-streaming="false"]) matches both roles.
+// Assistant responses in claude.ai always have at least one of:
+//   • a <pre> block (code)
+//   • multiple action buttons (copy, retry, …)
+//   • a prose-rendered markdown wrapper
+// User messages have none of these.
+function isLikelyAssistantTurn(el: Element): boolean {
+  if (el.querySelector('pre') !== null) return true;
+  if (el.querySelectorAll('button').length > 1) return true;
+  if (el.querySelector('[class*="prose"]') !== null) return true;
+  return false;
 }
 
 // Walk the element's text nodes rather than using .textContent so that
