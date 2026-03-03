@@ -49,7 +49,7 @@ async function handleMessage(msg: GeminiRequest): Promise<GeminiResponse> {
     case 'GEMINI_EMBED':
       return callEmbedding(msg.text, geminiApiKey);
     case 'GEMINI_LABEL':
-      return callLabel(msg.context, msg.existingLabels, geminiApiKey);
+      return callLabel(msg.context, msg.existingLabels, geminiApiKey, msg.parentLabel);
     case 'GEMINI_LIST_MODELS':
       return listEmbedModels(geminiApiKey);
     default: {
@@ -117,16 +117,24 @@ async function callLabel(
   context: string,
   existingLabels: string[],
   apiKey: string,
+  parentLabel?: string,
 ): Promise<GeminiResponse> {
   const existingStr = existingLabels.length ? existingLabels.join(', ') : 'none';
 
-  const promptText = [
-    'Generate a concise 2–5 word category label for the following conversation topic.',
-    'The label should be clearly distinct from existing labels.',
-    `Existing labels: ${existingStr}`,
-    `Topic text: "${context}"`,
-    'Respond ONLY with valid JSON in this exact shape: { "label": "Your Label Here" }',
-  ].join('\n');
+  const lines = [
+    'You are a conversation topic labeller.',
+    'Generate a concise 2–5 word noun phrase that names the topic of the text below.',
+    'Rules: no verbs, no filler words, no punctuation, Title Case.',
+    'The label must be clearly distinct from any existing labels.',
+  ];
+
+  if (parentLabel) {
+    lines.push(`This is a subtopic under the category "${parentLabel}" — be specific to that context.`);
+  }
+
+  lines.push(`Existing labels: ${existingStr}`, `Topic text: "${context}"`);
+
+  const promptText = lines.join('\n');
 
   let res: Response;
   try {
@@ -135,7 +143,14 @@ async function callLabel(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [{ parts: [{ text: promptText }] }],
-        generationConfig: { responseMimeType: 'application/json' },
+        generationConfig: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: 'OBJECT',
+            properties: { label: { type: 'STRING' } },
+            required: ['label'],
+          },
+        },
       }),
     });
   } catch (err) {
@@ -148,16 +163,22 @@ async function callLabel(
   }
 
   const data = await res.json();
-  const rawText: string = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
+  // Strip markdown code fences in case the model wraps output despite JSON mode
+  const rawText: string = (data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}')
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/, '')
+    .trim();
 
   let label = context.slice(0, 40).trim(); // safe fallback
   try {
     const parsed = JSON.parse(rawText);
     if (typeof parsed?.label === 'string' && parsed.label.trim()) {
       label = parsed.label.trim();
+    } else {
+      console.warn('[Chat Organizer] callLabel: unexpected JSON shape —', rawText);
     }
-  } catch {
-    // JSON parse failed — fallback label already set above
+  } catch (err) {
+    console.warn('[Chat Organizer] callLabel: JSON.parse failed —', rawText, err);
   }
 
   return { ok: true, type: 'GEMINI_LABEL', label };

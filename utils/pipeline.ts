@@ -74,22 +74,27 @@ export async function classifyPrompt(
     }
 
     // rank-2 miss — spawn new subheader under the matched header
-    const label = await fetchLabel(prompt.firstSentence, index, settings);
+    const label = await fetchLabel(prompt.firstSentence, index, settings, index.nodes[rank1Hit.id].label);
     const sub = spawnNode(index, rank1Hit.id, label, 2, sentenceEmbedding);
     return commit(index, hash, sub.id, rank1Hit.score, true, prompt.index);
   }
 
   // ── Step 5: Escalate — re-embed full text, scan all nodes ─────────────────
+  // labelSource upgrades to fullText once we've paid the cost to embed it —
+  // richer context produces better labels when the first sentence wasn't enough.
+  let labelSource = prompt.firstSentence;
+
   if (Object.keys(index.nodes).length > 1) {
     const fullEmbedRes = await sendToBackground({ type: 'GEMINI_EMBED', text: prompt.fullText });
     if (fullEmbedRes.ok) {
+      labelSource = prompt.fullText;
       const allCandidates = getAllEmbeddedCandidates(index);
       const fullHit = bestMatch(fullEmbedRes.embedding, allCandidates, settings.thresholdLow);
       if (fullHit) {
         // Place under the best match; if it's a header (rank 1), spawn a subheader
         const hitNode = index.nodes[fullHit.id];
         if (hitNode && hitNode.rank === 1) {
-          const label = await fetchLabel(prompt.firstSentence, index, settings);
+          const label = await fetchLabel(labelSource, index, settings, hitNode.label);
           const sub = spawnNode(index, fullHit.id, label, 2, fullEmbedRes.embedding);
           return commit(index, hash, sub.id, fullHit.score, true, prompt.index);
         }
@@ -99,7 +104,7 @@ export async function classifyPrompt(
   }
 
   // ── Step 6: No match — spawn a new rank-1 header ─────────────────────────
-  const label = await fetchLabel(prompt.firstSentence, index, settings);
+  const label = await fetchLabel(labelSource, index, settings);
   const header = spawnNode(index, 'root', label, 1, sentenceEmbedding);
   return commit(index, hash, header.id, 0, true, prompt.index);
 }
@@ -151,6 +156,7 @@ async function fetchLabel(
   text: string,
   index: ConversationIndex,
   settings: Settings,
+  parentLabel?: string,
 ): Promise<string> {
   const existingLabels = Object.values(index.nodes)
     .filter((n) => n.rank > 0)
@@ -160,6 +166,7 @@ async function fetchLabel(
     type: 'GEMINI_LABEL',
     context: text,
     existingLabels,
+    parentLabel,
   });
 
   // Graceful fallback: use truncated first sentence if label call fails

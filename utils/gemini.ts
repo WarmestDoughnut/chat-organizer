@@ -6,7 +6,7 @@
 
 export type GeminiRequest =
   | { type: 'GEMINI_EMBED'; text: string }
-  | { type: 'GEMINI_LABEL'; context: string; existingLabels: string[] }
+  | { type: 'GEMINI_LABEL'; context: string; existingLabels: string[]; parentLabel?: string }
   | { type: 'GEMINI_LIST_MODELS' };
 
 // ── Response types ────────────────────────────────────────────────────────────
