@@ -105,17 +105,19 @@ export default defineContentScript({
       const stored = await loadConversation(conversationId);
       if (isStale()) return;
 
-      if (stored) {
+      // Guard against old v1 storage shape (nodes/cache/prompts) — treat as fresh
+      if (stored && Array.isArray(stored.clusters)) {
         outline = {
           conversationId: stored.conversationId,
           clusters: stored.clusters,
-          messages: stored.messages,
-          analyzedIndices: stored.analyzedIndices,
+          messages: stored.messages ?? {},
+          analyzedIndices: stored.analyzedIndices ?? [],
         };
         console.log(
           `[Chat Organizer] Restored ${stored.clusters.length} cluster(s) for ${conversationId}.`,
         );
       } else {
+        if (stored) console.log('[Chat Organizer] Stale v1 storage detected — starting fresh.');
         outline = createOutline(conversationId);
       }
 
@@ -167,11 +169,16 @@ export default defineContentScript({
             analyzedIndices: outline.analyzedIndices,
           });
 
-          // Start watching for new messages
           startObserver();
-        } catch (err) {
+        } catch (err: any) {
           console.error('[Chat Organizer] Batch classify error:', err);
-          showPlaceholder('Analysis failed — check the console for details.');
+          const msg = err?.message ?? String(err);
+          const isQuota = msg.includes('429') || msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('exhausted');
+          showPlaceholder(
+            isQuota
+              ? 'Gemini API quota exceeded. The free tier resets daily — try again tomorrow or use a paid key.'
+              : `Analysis failed: ${msg}`,
+          );
         } finally {
           if (!isStale()) {
             analyzing = false;
