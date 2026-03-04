@@ -1,39 +1,33 @@
 // background.ts — MV3 service worker.
 //
-// Acts as a CORS proxy for all Gemini API calls.
-// Content scripts cannot fetch generativelanguage.googleapis.com directly
-// because the request would originate from claude.ai's origin and be blocked.
-// By routing through here, the request comes from the extension origin.
+// Acts as a CORS proxy for all Gemini Flash calls.
+// Handles two classify modes: full batch on "Analyze", incremental on new messages.
 //
 // Message protocol: see utils/gemini.ts
 
 import type { GeminiRequest, GeminiResponse } from '../utils/gemini';
-import { GEMINI_EMBEDDING_URL, GEMINI_FLASH_URL } from '../utils/gemini';
+import { GEMINI_FLASH_URL } from '../utils/gemini';
 import { loadSettings } from '../utils/storage';
 
 export default defineBackground(() => {
   console.log('[Chat Organizer] Background service worker started.');
 
-  chrome.runtime.onMessage.addListener(
-    (msg, _sender, sendResponse) => {
-      // Non-Gemini messages handled synchronously
-      if (msg?.type === 'OPEN_OPTIONS') {
-        chrome.runtime.openOptionsPage();
-        sendResponse({ ok: true });
-        return;
-      }
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (msg?.type === 'OPEN_OPTIONS') {
+      chrome.runtime.openOptionsPage();
+      sendResponse({ ok: true });
+      return;
+    }
 
-      handleMessage(msg as GeminiRequest)
-        .then(sendResponse)
-        .catch((err) => sendResponse({ ok: false, error: String(err) }));
+    handleMessage(msg as GeminiRequest)
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, error: String(err) }));
 
-      // Return true to keep the message channel open for the async response.
-      return true;
-    },
-  );
+    return true; // keep channel open for async response
+  });
 });
 
-// ── Message dispatch ──────────────────────────────────────────────────────────
+// ── Dispatch ──────────────────────────────────────────────────────────────────
 
 async function handleMessage(msg: GeminiRequest): Promise<GeminiResponse> {
   const { geminiApiKey } = await loadSettings();
@@ -46,96 +40,92 @@ async function handleMessage(msg: GeminiRequest): Promise<GeminiResponse> {
   }
 
   switch (msg.type) {
-    case 'GEMINI_EMBED':
-      return callEmbedding(msg.text, geminiApiKey);
-    case 'GEMINI_LABEL':
-      return callLabel(msg.context, msg.existingLabels, geminiApiKey, msg.parentLabel);
+    case 'BATCH_CLASSIFY':
+      return callBatchClassify(msg.messages, geminiApiKey);
+    case 'INCREMENTAL_CLASSIFY':
+      return callIncrementalClassify(msg.existingClusters, msg.newMessages, geminiApiKey);
     case 'GEMINI_LIST_MODELS':
-      return listEmbedModels(geminiApiKey);
+      return listModels(geminiApiKey);
     default: {
       const _exhaustive: never = msg;
-      return { ok: false, error: `Unknown message type` };
+      return { ok: false, error: 'Unknown message type' };
     }
   }
 }
 
-// ── Gemini text-embedding-004 ─────────────────────────────────────────────────
+// ── Batch classify ────────────────────────────────────────────────────────────
 
-async function callEmbedding(text: string, apiKey: string): Promise<GeminiResponse> {
-  let res: Response;
-  try {
-    res = await fetch(`${GEMINI_EMBEDDING_URL}?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        content: { parts: [{ text }] },
-        taskType: 'SEMANTIC_SIMILARITY',
-      }),
-    });
-  } catch (err) {
-    return { ok: false, error: `Embedding fetch error: ${err}` };
-  }
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    return { ok: false, error: `Embedding API ${res.status}: ${body}` };
-  }
-
-  const data = await res.json();
-  const embedding: number[] = data?.embedding?.values ?? [];
-
-  if (embedding.length === 0) {
-    return { ok: false, error: 'Embedding API returned empty values array.' };
-  }
-
-  return { ok: true, type: 'GEMINI_EMBED', embedding };
-}
-
-// ── List available embedding models (diagnostic) ─────────────────────────────
-
-async function listEmbedModels(apiKey: string): Promise<GeminiResponse> {
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}&pageSize=200`,
-  );
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    return { ok: false, error: `ListModels ${res.status}: ${body}` };
-  }
-
-  const data = await res.json();
-  const allModels: string[] = (data.models ?? []).map(
-    (m: any) => `${m.name} [${(m.supportedGenerationMethods ?? []).join(',')}]`,
-  );
-
-  console.log('[Chat Organizer] All models:', allModels);
-  return { ok: true, type: 'GEMINI_LABEL', label: allModels.join(' | ') };
-}
-
-// ── Gemini 2.0 Flash (label generation) ──────────────────────────────────────
-
-async function callLabel(
-  context: string,
-  existingLabels: string[],
+async function callBatchClassify(
+  messages: Array<{ index: number; firstSentence: string }>,
   apiKey: string,
-  parentLabel?: string,
 ): Promise<GeminiResponse> {
-  const existingStr = existingLabels.length ? existingLabels.join(', ') : 'none';
+  const messageLines = messages
+    .map((m) => `[${m.index}] "${m.firstSentence}"`)
+    .join('\n');
 
-  const lines = [
-    'You are a conversation topic labeller.',
-    'Generate a concise 2–5 word noun phrase that names the topic of the text below.',
-    'Rules: no verbs, no filler words, no punctuation, Title Case.',
-    'The label must be clearly distinct from any existing labels.',
-  ];
+  const prompt = [
+    'You are a conversation topic organiser.',
+    'Below are assistant messages from a chat, each labelled with its index number.',
+    'Group them into 2–7 topic clusters.',
+    'Only add subclusters when a cluster has 4 or more messages AND those messages',
+    'clearly split into distinct subtopics. Flat clusters (no subclusters) are preferred',
+    'for small or tightly focused topics.',
+    'Cluster and subcluster labels must be concise 2–5 word noun phrases, Title Case,',
+    'no punctuation. Every message index must appear exactly once in the output.',
+    '',
+    'Messages:',
+    messageLines,
+  ].join('\n');
 
-  if (parentLabel) {
-    lines.push(`This is a subtopic under the category "${parentLabel}" — be specific to that context.`);
-  }
+  return callFlash(prompt, BATCH_SCHEMA, apiKey, 'BATCH_CLASSIFY');
+}
 
-  lines.push(`Existing labels: ${existingStr}`, `Topic text: "${context}"`);
+// ── Incremental classify ──────────────────────────────────────────────────────
 
-  const promptText = lines.join('\n');
+async function callIncrementalClassify(
+  existingClusters: Array<{ label: string; subclusters: Array<{ label: string }> }>,
+  newMessages: Array<{ index: number; firstSentence: string }>,
+  apiKey: string,
+): Promise<GeminiResponse> {
+  const outlineLines = existingClusters.map((c, ci) => {
+    const header = `Cluster ${ci}: "${c.label}"`;
+    const subs = c.subclusters.length
+      ? c.subclusters.map((sc, si) => `  Subcluster ${ci}.${si}: "${sc.label}"`).join('\n')
+      : '  (flat — no subclusters)';
+    return `${header}\n${subs}`;
+  }).join('\n');
 
+  const newLines = newMessages
+    .map((m) => `[${m.index}] "${m.firstSentence}"`)
+    .join('\n');
+
+  const prompt = [
+    'You are adding new messages to an existing conversation outline.',
+    'Assign each new message to the most fitting existing cluster and subcluster.',
+    'If no existing cluster fits, create a new one with a 2–5 word noun-phrase label.',
+    'If a message is assigned to a cluster that has existing subclusters, you must',
+    'also provide a subclusterLabel (existing or new).',
+    'If a message is assigned to a flat cluster (no subclusters), omit subclusterLabel.',
+    'Labels: Title Case, no punctuation.',
+    '',
+    'Existing outline:',
+    outlineLines,
+    '',
+    'New messages to classify:',
+    newLines,
+  ].join('\n');
+
+  return callFlash(prompt, INCREMENTAL_SCHEMA, apiKey, 'INCREMENTAL_CLASSIFY');
+}
+
+// ── Shared Flash caller ───────────────────────────────────────────────────────
+
+async function callFlash(
+  promptText: string,
+  schema: object,
+  apiKey: string,
+  responseType: 'BATCH_CLASSIFY' | 'INCREMENTAL_CLASSIFY',
+): Promise<GeminiResponse> {
   let res: Response;
   try {
     res = await fetch(`${GEMINI_FLASH_URL}?key=${apiKey}`, {
@@ -145,41 +135,99 @@ async function callLabel(
         contents: [{ parts: [{ text: promptText }] }],
         generationConfig: {
           responseMimeType: 'application/json',
-          responseSchema: {
-            type: 'OBJECT',
-            properties: { label: { type: 'STRING' } },
-            required: ['label'],
-          },
+          responseSchema: schema,
         },
       }),
     });
   } catch (err) {
-    return { ok: false, error: `Label fetch error: ${err}` };
+    return { ok: false, error: `Flash fetch error: ${err}` };
   }
 
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    return { ok: false, error: `Label API ${res.status}: ${body}` };
+    return { ok: false, error: `Flash API ${res.status}: ${body}` };
   }
 
   const data = await res.json();
-  // Strip markdown code fences in case the model wraps output despite JSON mode
   const rawText: string = (data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}')
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/\s*```$/, '')
     .trim();
 
-  let label = context.slice(0, 40).trim(); // safe fallback
   try {
     const parsed = JSON.parse(rawText);
-    if (typeof parsed?.label === 'string' && parsed.label.trim()) {
-      label = parsed.label.trim();
+    if (responseType === 'BATCH_CLASSIFY') {
+      return { ok: true, type: 'BATCH_CLASSIFY', result: parsed };
     } else {
-      console.warn('[Chat Organizer] callLabel: unexpected JSON shape —', rawText);
+      return { ok: true, type: 'INCREMENTAL_CLASSIFY', result: parsed };
     }
   } catch (err) {
-    console.warn('[Chat Organizer] callLabel: JSON.parse failed —', rawText, err);
+    console.warn('[Chat Organizer] Flash JSON parse failed —', rawText, err);
+    return { ok: false, error: `JSON parse error: ${err}` };
   }
+}
 
-  return { ok: true, type: 'GEMINI_LABEL', label };
+// ── JSON schemas for Flash structured output ──────────────────────────────────
+
+const SUBCLUSTER_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    label:          { type: 'STRING' },
+    messageIndices: { type: 'ARRAY', items: { type: 'INTEGER' } },
+  },
+  required: ['label', 'messageIndices'],
+};
+
+const CLUSTER_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    label:          { type: 'STRING' },
+    messageIndices: { type: 'ARRAY', items: { type: 'INTEGER' } },
+    subclusters:    { type: 'ARRAY', items: SUBCLUSTER_SCHEMA },
+  },
+  required: ['label', 'messageIndices', 'subclusters'],
+};
+
+const BATCH_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    clusters: { type: 'ARRAY', items: CLUSTER_SCHEMA },
+  },
+  required: ['clusters'],
+};
+
+const ASSIGNMENT_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    messageIndex:    { type: 'INTEGER' },
+    clusterLabel:    { type: 'STRING' },
+    subclusterLabel: { type: 'STRING' },
+  },
+  required: ['messageIndex', 'clusterLabel'],
+};
+
+const INCREMENTAL_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    assignments: { type: 'ARRAY', items: ASSIGNMENT_SCHEMA },
+  },
+  required: ['assignments'],
+};
+
+// ── Diagnostic ────────────────────────────────────────────────────────────────
+
+async function listModels(apiKey: string): Promise<GeminiResponse> {
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}&pageSize=200`,
+  );
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    return { ok: false, error: `ListModels ${res.status}: ${body}` };
+  }
+  const data = await res.json();
+  const models: string[] = (data.models ?? []).map(
+    (m: any) => `${m.name} [${(m.supportedGenerationMethods ?? []).join(',')}]`,
+  );
+  console.log('[Chat Organizer] All models:', models);
+  return { ok: true, type: 'GEMINI_LIST_MODELS', label: models.join(' | ') };
 }

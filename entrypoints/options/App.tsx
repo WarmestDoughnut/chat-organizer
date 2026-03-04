@@ -25,8 +25,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'monospace',
   },
   hint: { display: 'block', marginTop: 5, fontSize: 12, color: '#777' },
-  range: { width: '100%', marginTop: 4 },
-  rangeRow: { display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#555', marginTop: 2 },
   footer: { display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 },
   saveBtn: {
     padding: '9px 20px',
@@ -51,11 +49,7 @@ const styles: Record<string, React.CSSProperties> = {
 };
 
 function OptionsApp() {
-  const [settings, setSettings] = useState<Settings>({
-    geminiApiKey: '',
-    thresholdHigh: 0.8,
-    thresholdLow: 0.5,
-  });
+  const [settings, setSettings] = useState<Settings>({ geminiApiKey: '' });
   const [saved, setSaved] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -70,10 +64,6 @@ function OptionsApp() {
     setTimeout(() => setSaved(false), 2500);
   }
 
-  function patch(key: keyof Settings, value: Settings[typeof key]) {
-    setSettings((s) => ({ ...s, [key]: value }));
-  }
-
   if (loading) return null;
 
   return (
@@ -81,7 +71,7 @@ function OptionsApp() {
       <h1 style={styles.heading}>Chat Organizer</h1>
       <p style={styles.sub}>
         Automatically organises your Claude.ai conversations into a collapsible outline
-        powered by semantic embeddings.
+        powered by Gemini 2.0 Flash.
       </p>
 
       {!settings.geminiApiKey && (
@@ -92,7 +82,6 @@ function OptionsApp() {
       )}
 
       <form onSubmit={handleSave}>
-        {/* ── API Key ── */}
         <div style={styles.card}>
           <div style={styles.sectionTitle}>Gemini API Key</div>
           <label style={styles.label}>
@@ -101,7 +90,7 @@ function OptionsApp() {
               type="password"
               style={styles.input}
               value={settings.geminiApiKey}
-              onChange={(e) => patch('geminiApiKey', e.target.value)}
+              onChange={(e) => setSettings((s) => ({ ...s, geminiApiKey: e.target.value }))}
               placeholder="AIza..."
               autoComplete="off"
             />
@@ -110,57 +99,7 @@ function OptionsApp() {
               <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">
                 Google AI Studio
               </a>
-              . Used for <code>text-embedding-004</code> (similarity) and{' '}
-              <code>gemini-2.0-flash</code> (label generation). Free tier: ~1,500 embedding calls/day.
-            </span>
-          </label>
-        </div>
-
-        {/* ── Similarity Thresholds ── */}
-        <div style={styles.card}>
-          <div style={styles.sectionTitle}>Similarity Thresholds</div>
-
-          <label style={styles.label}>
-            <span style={styles.labelText}>
-              High confidence — direct match &nbsp;
-              <strong>{settings.thresholdHigh.toFixed(2)}</strong>
-            </span>
-            <input
-              type="range"
-              style={styles.range}
-              min={0.5} max={1} step={0.05}
-              value={settings.thresholdHigh}
-              onChange={(e) => patch('thresholdHigh', Number(e.target.value))}
-            />
-            <div style={styles.rangeRow}>
-              <span>← broader matching</span>
-              <span>stricter matching →</span>
-            </div>
-            <span style={styles.hint}>
-              Above this score the prompt is inserted directly under the matched header.
-              Raise it if unrelated messages are being grouped together.
-            </span>
-          </label>
-
-          <label style={styles.label}>
-            <span style={styles.labelText}>
-              Low confidence — escalation cutoff &nbsp;
-              <strong>{settings.thresholdLow.toFixed(2)}</strong>
-            </span>
-            <input
-              type="range"
-              style={styles.range}
-              min={0} max={0.79} step={0.05}
-              value={settings.thresholdLow}
-              onChange={(e) => patch('thresholdLow', Number(e.target.value))}
-            />
-            <div style={styles.rangeRow}>
-              <span>← more new headers</span>
-              <span>fewer new headers →</span>
-            </div>
-            <span style={styles.hint}>
-              If the full-text scan scores below this, a brand-new header is spawned.
-              Lower it if the outline is getting too sparse.
+              . Used for <code>gemini-2.0-flash</code> (topic clustering). Free tier applies.
             </span>
           </label>
         </div>

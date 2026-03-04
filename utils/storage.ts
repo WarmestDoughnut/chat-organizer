@@ -1,22 +1,20 @@
 // storage.ts — chrome.storage.local helpers.
-// NOTE: embeddings are NOT stored here — only tree structure and cache.
-// Embeddings are re-computed in-memory on page load via initializeEmbeddings().
+// Stores the conversation outline (clusters/subclusters/messages) and settings.
+// No embeddings — those lived in v1 and are gone.
 
-import type { OutlineNode, PromptRecord, CacheEntry } from './tree';
+import type { Cluster, MessageRecord } from './outline';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface StoredConversation {
   conversationId: string;
-  prompts: PromptRecord[];
-  nodes: Record<string, OutlineNode>;
-  cache: Record<string, CacheEntry>;
+  clusters: Cluster[];
+  messages: Record<number, MessageRecord>;
+  analyzedIndices: number[];
 }
 
 export interface Settings {
   geminiApiKey: string;
-  thresholdHigh: number; // cosine similarity for confident match (default 0.8)
-  thresholdLow: number;  // cosine similarity for escalation cutoff (default 0.5)
 }
 
 // ── Keys ──────────────────────────────────────────────────────────────────────
@@ -41,8 +39,6 @@ export async function saveConversation(stored: StoredConversation): Promise<void
 
 const DEFAULT_SETTINGS: Settings = {
   geminiApiKey: '',
-  thresholdHigh: 0.8,
-  thresholdLow: 0.5,
 };
 
 export async function loadSettings(): Promise<Settings> {

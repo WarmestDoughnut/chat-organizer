@@ -1,24 +1,16 @@
 // content.ts — injected into claude.ai.
 // Responsibilities:
-//   1. Inject the sidebar shell via Shadow DOM (once, persists across navigation)
-//   2. On each conversation load/navigation: restore index, check enabled state, render
-//   3. When user enables: re-embed labels, parse existing messages, watch for new ones
-//   4. On SPA navigation: tear down observer, reinitialize for the new conversation
+//   1. Inject sidebar shell via Shadow DOM (once, persists across SPA navigation)
+//   2. On each conversation load: restore stored outline, render read-only
+//   3. "▶ Analyze" click: batch-classify all messages, save, render
+//   4. MutationObserver: detect new messages, incrementally classify, save, render
+//   5. SPA navigation: tear down observer, reinitialize for new conversation
 
 import sidebarCss from '../assets/sidebar.css?inline';
-import {
-  parseMessages,
-  findConversationContainer,
-  type ParsedMessage,
-} from '../utils/domParser';
-import {
-  createIndex,
-  type ConversationIndex,
-  type OutlineNode,
-} from '../utils/tree';
-import { classifyPrompt, initializeEmbeddings } from '../utils/pipeline';
+import { parseMessages, findConversationContainer, type ParsedMessage } from '../utils/domParser';
+import { createOutline, type ConversationOutline, type Cluster } from '../utils/outline';
+import { batchClassify, incrementalClassify } from '../utils/classify';
 import { loadSettings, loadConversation, saveConversation, type Settings } from '../utils/storage';
-import { hashPrompt } from '../utils/hash';
 
 export default defineContentScript({
   matches: ['https://claude.ai/*'],
@@ -28,7 +20,7 @@ export default defineContentScript({
 
     if (document.getElementById('chat-organizer-host')) return;
 
-    // ── Shadow DOM host (created once, persists across SPA navigation) ────────
+    // ── Shadow DOM host ───────────────────────────────────────────────────────
     const host = document.createElement('div');
     host.id = 'chat-organizer-host';
     document.body.appendChild(host);
@@ -50,8 +42,8 @@ export default defineContentScript({
     titleEl.className = 'sidebar__title';
     titleEl.textContent = 'Chat Outline';
 
-    const enableBtn = document.createElement('button');
-    enableBtn.className = 'sidebar__enable-btn';
+    const analyzeBtn = document.createElement('button');
+    analyzeBtn.className = 'sidebar__enable-btn';
 
     const toggle = document.createElement('button');
     toggle.className = 'sidebar__toggle';
@@ -59,7 +51,7 @@ export default defineContentScript({
     toggle.textContent = '▶';
 
     header.appendChild(titleEl);
-    header.appendChild(enableBtn);
+    header.appendChild(analyzeBtn);
     header.appendChild(toggle);
 
     const body = document.createElement('div');
@@ -78,28 +70,19 @@ export default defineContentScript({
       toggle.textContent = collapsed ? '◀' : '▶';
     });
 
-    // ── Load settings once (shared across conversations) ──────────────────────
+    // ── Load settings once ────────────────────────────────────────────────────
     const settings: Settings = await loadSettings();
 
-    // ── Per-conversation teardown handles ─────────────────────────────────────
+    // ── Per-conversation state ────────────────────────────────────────────────
     let currentObserver: MutationObserver | null = null;
-
-    // Generation counter — incremented on every navigation.
-    // Any async callback captures its generation at creation time and checks
-    // isStale() before touching shared DOM or state. Stale callbacks abort.
     let currentGeneration = 0;
+    let onAnalyzeClick: () => void = () => {};
+    analyzeBtn.addEventListener('click', () => onAnalyzeClick());
 
-    // Single permanent click handler — delegates to whatever the current
-    // conversation's enable action is. Replaced on each navigation.
-    let onEnableClick: (() => void) = () => {};
-    enableBtn.addEventListener('click', () => onEnableClick());
-
-    // ── Initialize for current conversation, then watch for navigation ────────
+    // ── SPA navigation loop ───────────────────────────────────────────────────
     let activeConversationId = extractConversationId();
     await initForConversation(activeConversationId);
 
-    // Poll for SPA navigation — claude.ai uses history.pushState which doesn't
-    // fire standard events, so we watch the pathname ourselves.
     setInterval(async () => {
       const newId = extractConversationId();
       if (newId !== activeConversationId) {
@@ -117,278 +100,313 @@ export default defineContentScript({
       const myGen = ++currentGeneration;
       const isStale = () => myGen !== currentGeneration;
 
-
-      // Load stored tree
-      let index: ConversationIndex;
+      // Restore stored outline (or start fresh)
+      let outline: ConversationOutline;
       const stored = await loadConversation(conversationId);
-      if (isStale()) return; // navigation happened while awaiting storage
+      if (isStale()) return;
+
       if (stored) {
-        index = createIndex(conversationId);
-        index.nodes = stored.nodes;
-        index.cache = stored.cache;
-        index.prompts = stored.prompts;
+        outline = {
+          conversationId: stored.conversationId,
+          clusters: stored.clusters,
+          messages: stored.messages,
+          analyzedIndices: stored.analyzedIndices,
+        };
         console.log(
-          `[Chat Organizer] Restored ${Object.keys(stored.nodes).length - 1} node(s) for ${conversationId}.`,
+          `[Chat Organizer] Restored ${stored.clusters.length} cluster(s) for ${conversationId}.`,
         );
       } else {
-        index = createIndex(conversationId);
+        outline = createOutline(conversationId);
       }
 
-      // Pipeline is always off on page load / navigation — user must click
-      // ▶ Analyze to start live monitoring for this session.
-      // Stored outline data still shows in read-only mode without it.
-      let pipelineEnabled = false;
-
-      // Reset collapse state for the new conversation
+      let analyzing = false;
       const collapsedNodes = new Set<string>();
 
-      // ── Sync enable button ────────────────────────────────────────────────
-      function syncEnableBtn() {
+      // ── Analyze button state ────────────────────────────────────────────────
+      function syncAnalyzeBtn() {
         if (!settings.geminiApiKey) {
-          enableBtn.textContent = '⚙ Key needed';
-          enableBtn.disabled = true;
-        } else if (pipelineEnabled) {
-          enableBtn.textContent = '● Live';
-          enableBtn.disabled = true;
+          analyzeBtn.textContent = '⚙ Key needed';
+          analyzeBtn.disabled = true;
+        } else if (analyzing) {
+          analyzeBtn.textContent = '⏳ Analyzing…';
+          analyzeBtn.disabled = true;
         } else {
-          enableBtn.textContent = '▶ Analyze';
-          enableBtn.disabled = false;
+          analyzeBtn.textContent = '▶ Analyze';
+          analyzeBtn.disabled = false;
         }
       }
 
-      // Point the permanent click handler at this conversation's action.
-      // Always starts fresh — wipes stored data and reclassifies from scratch.
-      onEnableClick = async () => {
-        index = createIndex(conversationId);
-        await saveConversation({ conversationId, prompts: [], nodes: index.nodes, cache: {} });
-        startPipeline(true);
+      // Always starts fresh — wipes stored data and re-classifies from scratch.
+      onAnalyzeClick = async () => {
+        if (analyzing || isStale()) return;
+        analyzing = true;
+        syncAnalyzeBtn();
+
+        // Clear previous state
+        outline = createOutline(conversationId);
+        collapsedNodes.clear();
+        renderOutline();
+
+        try {
+          const messages = parseMessages();
+          if (messages.length === 0) {
+            showPlaceholder('No assistant messages found to analyze.');
+            return;
+          }
+
+          console.log(`[Chat Organizer] Batch-classifying ${messages.length} message(s)…`);
+          outline = await batchClassify(messages, conversationId);
+          if (isStale()) return;
+
+          console.log(`[Chat Organizer] Got ${outline.clusters.length} cluster(s).`);
+          renderOutline();
+          await saveConversation({
+            conversationId,
+            clusters: outline.clusters,
+            messages: outline.messages,
+            analyzedIndices: outline.analyzedIndices,
+          });
+
+          // Start watching for new messages
+          startObserver();
+        } catch (err) {
+          console.error('[Chat Organizer] Batch classify error:', err);
+          showPlaceholder('Analysis failed — check the console for details.');
+        } finally {
+          if (!isStale()) {
+            analyzing = false;
+            syncAnalyzeBtn();
+          }
+        }
       };
 
-      syncEnableBtn();
-      renderTree();
+      syncAnalyzeBtn();
+      renderOutline();
 
       if (!settings.geminiApiKey) {
         showNoKeyPlaceholder();
         return;
       }
 
-      // Pipeline never auto-starts — ▶ Analyze is required each session.
-
-      // ── Pipeline startup ────────────────────────────────────────────────────
-
-      function startPipeline(fresh: boolean) {
-        pipelineEnabled = true;
-        syncEnableBtn();
-        renderTree();
-
-        initializeEmbeddings(index, settings).catch((err) =>
-          console.warn('[Chat Organizer] Embedding init error:', err),
-        );
-
-        // Fresh start: ignore existing cache so all messages get reclassified.
-        // Auto-resume: skip messages already in the cache.
-        const processedHashes = fresh
-          ? new Set<string>()
-          : new Set<string>(Object.keys(index.cache));
-        let processingQueue: ParsedMessage[] = [];
-        let isProcessing = false;
-
-        async function drainQueue() {
-          if (isProcessing || processingQueue.length === 0) return;
-          isProcessing = true;
-
-          while (processingQueue.length > 0) {
-            if (isStale()) { isProcessing = false; return; }
-
-            const msg = processingQueue.shift()!;
-            const hash = hashPrompt(msg.fullText);
-            if (processedHashes.has(hash)) continue;
-
-            index.prompts.push({
-              index: msg.index,
-              fullText: msg.fullText,
-              firstSentence: msg.headingText,
-              hash,
-            });
-
-            try {
-              const result = await classifyPrompt(
-                index,
-                { index: msg.index, fullText: msg.fullText, firstSentence: msg.headingText },
-                settings,
-              );
-              if (isStale()) { isProcessing = false; return; }
-
-              processedHashes.add(hash);
-              console.log(
-                `[Chat Organizer] Classified msg #${msg.index} → node "${index.nodes[result.nodeId]?.label}" ` +
-                `(confidence ${result.confidence.toFixed(2)}, new=${result.isNewNode})`,
-              );
-
-              renderTree();
-              await saveConversation({
-                conversationId,
-                prompts: index.prompts,
-                nodes: index.nodes,
-                cache: index.cache,
-              });
-            } catch (err) {
-              console.error('[Chat Organizer] Pipeline error for msg #', msg.index, err);
-              index.prompts.pop();
-            }
-          }
-
-          isProcessing = false;
-        }
-
-        setTimeout(() => {
-          if (isStale()) return; // navigated away during the initial delay
-
-          const existing = parseMessages();
-          const unseen = existing.filter((m) => !processedHashes.has(hashPrompt(m.fullText)));
-          if (unseen.length > 0) {
-            processingQueue.push(...unseen);
-            drainQueue();
-          }
-
-          let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-
-          const observer = new MutationObserver(() => {
-            if (isStale()) { observer.disconnect(); return; }
-            if (debounceTimer !== null) clearTimeout(debounceTimer);
-            debounceTimer = setTimeout(() => {
-              debounceTimer = null;
-              if (isStale()) return;
-              const messages = parseMessages();
-              const newMessages = messages.filter(
-                (m) => !processedHashes.has(hashPrompt(m.fullText)),
-              );
-              if (newMessages.length > 0) {
-                processingQueue.push(...newMessages);
-                drainQueue();
-              }
-            }, 600);
-          });
-
-          const container = findConversationContainer();
-          observer.observe(container, { childList: true, subtree: true });
-          currentObserver = observer;
-        }, 1200);
+      // If we have a stored outline, resume watching for new messages silently.
+      if (stored && stored.analyzedIndices.length > 0) {
+        startObserver();
       }
 
-      // ── Sidebar rendering ─────────────────────────────────────────────────
+      // ── MutationObserver ────────────────────────────────────────────────────
 
-      function renderTree() {
+      function startObserver() {
+        if (currentObserver) currentObserver.disconnect();
+
+        let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+        const observer = new MutationObserver(() => {
+          if (isStale()) { observer.disconnect(); return; }
+          if (debounceTimer !== null) clearTimeout(debounceTimer);
+          debounceTimer = setTimeout(async () => {
+            debounceTimer = null;
+            if (isStale()) return;
+
+            const allMessages = parseMessages();
+            const newMessages = allMessages.filter(
+              (m) => !outline.analyzedIndices.includes(m.index),
+            );
+
+            if (newMessages.length === 0) return;
+
+            console.log(`[Chat Organizer] ${newMessages.length} new message(s) — incrementally classifying…`);
+
+            try {
+              await incrementalClassify(outline, newMessages);
+              if (isStale()) return;
+              renderOutline();
+              await saveConversation({
+                conversationId,
+                clusters: outline.clusters,
+                messages: outline.messages,
+                analyzedIndices: outline.analyzedIndices,
+              });
+            } catch (err) {
+              console.error('[Chat Organizer] Incremental classify error:', err);
+            }
+          }, 1500); // longer debounce: wait for streaming to finish
+        });
+
+        const container = findConversationContainer();
+        observer.observe(container, { childList: true, subtree: true });
+        currentObserver = observer;
+      }
+
+      // ── Rendering ───────────────────────────────────────────────────────────
+
+      function renderOutline() {
         while (body.firstChild) body.removeChild(body.firstChild);
 
-        const root = index.nodes['root'];
-        if (!root || root.children.length === 0) {
-          const p = document.createElement('p');
-          p.className = 'outline-panel__placeholder';
-          p.textContent = pipelineEnabled
-            ? 'No messages classified yet…'
-            : 'Press ▶ Analyze to build the outline for this chat.';
-          body.appendChild(p);
+        if (outline.clusters.length === 0) {
+          showPlaceholder(
+            settings.geminiApiKey
+              ? 'Press ▶ Analyze to build the outline for this chat.'
+              : 'Add a Gemini API key to enable the outline.',
+          );
           return;
         }
 
-        body.appendChild(buildNodeList('root', 0));
-      }
-
-      function buildNodeList(parentId: string, depth: number): HTMLUListElement {
         const ul = document.createElement('ul');
         ul.className = 'outline-list';
 
-        for (const childId of index.nodes[parentId].children) {
-          const node = index.nodes[childId];
-          if (!node) continue;
+        for (const cluster of outline.clusters) {
+          ul.appendChild(buildClusterItem(cluster));
+        }
 
-          const hasSubNodes = node.children.length > 0;
-          const hasPrompts  = node.promptIndices.length > 0;
-          const isExpandable = hasSubNodes || hasPrompts;
-          const isCollapsed  = collapsedNodes.has(node.id);
+        body.appendChild(ul);
+      }
 
-          const li = document.createElement('li');
-          li.className = `outline-item outline-item--rank${node.rank}`;
+      function buildClusterItem(cluster: Cluster): HTMLLIElement {
+        const hasSubclusters = cluster.subclusters.length > 0;
+        const hasFlatMessages = cluster.messageIndices.length > 0;
+        const isExpandable = hasSubclusters || hasFlatMessages;
+        const isCollapsed = collapsedNodes.has(cluster.id);
 
-          const row = document.createElement('div');
-          row.className = 'outline-item__row';
+        const li = document.createElement('li');
+        li.className = 'outline-item outline-item--rank1';
 
-          if (isExpandable) {
-            const expandBtn = document.createElement('button');
-            expandBtn.className = 'outline-item__expand';
-            expandBtn.textContent = isCollapsed ? '▸' : '▾';
-            expandBtn.setAttribute('aria-expanded', String(!isCollapsed));
+        const row = document.createElement('div');
+        row.className = 'outline-item__row';
 
-            expandBtn.addEventListener('click', (e) => {
-              e.stopPropagation();
-              if (collapsedNodes.has(node.id)) {
-                collapsedNodes.delete(node.id);
-              } else {
-                collapsedNodes.add(node.id);
-              }
-              renderTree();
-            });
+        if (isExpandable) {
+          const expandBtn = document.createElement('button');
+          expandBtn.className = 'outline-item__expand';
+          expandBtn.textContent = isCollapsed ? '▸' : '▾';
+          expandBtn.setAttribute('aria-expanded', String(!isCollapsed));
+          expandBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleCollapsed(cluster.id);
+          });
+          row.appendChild(expandBtn);
+        }
 
-            row.appendChild(expandBtn);
-          }
+        const btn = document.createElement('button');
+        btn.className = 'outline-item__btn';
+        btn.textContent = cluster.label;
+        btn.title = cluster.label;
+        btn.addEventListener('click', () => scrollToFirst(cluster));
 
-          const btn = document.createElement('button');
-          btn.className = 'outline-item__btn';
-          btn.textContent = node.label;
-          btn.title = node.label;
-          btn.addEventListener('click', () => scrollToNode(node));
+        const badge = document.createElement('span');
+        badge.className = 'outline-item__badge';
+        badge.textContent = String(countClusterMessages(cluster));
 
-          const badge = document.createElement('span');
-          badge.className = 'outline-item__badge';
-          badge.textContent = String(node.promptCount);
+        row.appendChild(btn);
+        row.appendChild(badge);
+        li.appendChild(row);
 
-          row.appendChild(btn);
-          row.appendChild(badge);
-          li.appendChild(row);
+        if (isExpandable && !isCollapsed) {
+          const children = document.createElement('ul');
+          children.className = 'outline-list';
 
-          if (isExpandable && !isCollapsed) {
-            if (hasSubNodes) li.appendChild(buildNodeList(childId, depth + 1));
-
-            if (hasPrompts) {
-              const msgList = document.createElement('ul');
-              msgList.className = 'outline-list outline-list--messages';
-
-              for (const promptIdx of node.promptIndices) {
-                const record = index.prompts.find((p) => p.index === promptIdx);
-                if (!record) continue;
-
-                const msgLi = document.createElement('li');
-                msgLi.className = 'outline-item outline-item--message';
-
-                const msgBtn = document.createElement('button');
-                msgBtn.className = 'outline-item__btn outline-item__btn--message';
-                msgBtn.textContent = record.firstSentence;
-                msgBtn.title = record.firstSentence;
-                msgBtn.addEventListener('click', () => scrollToPromptIndex(promptIdx));
-
-                msgLi.appendChild(msgBtn);
-                msgList.appendChild(msgLi);
-              }
-
-              li.appendChild(msgList);
+          if (hasSubclusters) {
+            for (const sub of cluster.subclusters) {
+              children.appendChild(buildSubclusterItem(sub));
             }
           }
 
-          ul.appendChild(li);
+          // Flat messages (cluster has no subclusters, or overflow messages)
+          if (hasFlatMessages) {
+            for (const idx of cluster.messageIndices) {
+              children.appendChild(buildMessageItem(idx));
+            }
+          }
+
+          li.appendChild(children);
         }
 
-        return ul;
+        return li;
+      }
+
+      function buildSubclusterItem(sub: { id: string; label: string; messageIndices: number[] }): HTMLLIElement {
+        const isCollapsed = collapsedNodes.has(sub.id);
+        const isExpandable = sub.messageIndices.length > 0;
+
+        const li = document.createElement('li');
+        li.className = 'outline-item outline-item--rank2';
+
+        const row = document.createElement('div');
+        row.className = 'outline-item__row';
+
+        if (isExpandable) {
+          const expandBtn = document.createElement('button');
+          expandBtn.className = 'outline-item__expand';
+          expandBtn.textContent = isCollapsed ? '▸' : '▾';
+          expandBtn.setAttribute('aria-expanded', String(!isCollapsed));
+          expandBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleCollapsed(sub.id);
+          });
+          row.appendChild(expandBtn);
+        }
+
+        const btn = document.createElement('button');
+        btn.className = 'outline-item__btn';
+        btn.textContent = sub.label;
+        btn.title = sub.label;
+        btn.addEventListener('click', () => {
+          const firstIdx = sub.messageIndices[0];
+          if (firstIdx !== undefined) scrollToMessageIndex(firstIdx);
+        });
+
+        const badge = document.createElement('span');
+        badge.className = 'outline-item__badge';
+        badge.textContent = String(sub.messageIndices.length);
+
+        row.appendChild(btn);
+        row.appendChild(badge);
+        li.appendChild(row);
+
+        if (isExpandable && !isCollapsed) {
+          const msgList = document.createElement('ul');
+          msgList.className = 'outline-list outline-list--messages';
+          for (const idx of sub.messageIndices) {
+            msgList.appendChild(buildMessageItem(idx));
+          }
+          li.appendChild(msgList);
+        }
+
+        return li;
+      }
+
+      function buildMessageItem(idx: number): HTMLLIElement {
+        const record = outline.messages[idx];
+        const li = document.createElement('li');
+        li.className = 'outline-item outline-item--message';
+
+        const btn = document.createElement('button');
+        btn.className = 'outline-item__btn outline-item__btn--message';
+        btn.textContent = record?.firstSentence ?? `Message ${idx}`;
+        btn.title = btn.textContent;
+        btn.addEventListener('click', () => scrollToMessageIndex(idx));
+
+        li.appendChild(btn);
+        return li;
+      }
+
+      function toggleCollapsed(id: string) {
+        if (collapsedNodes.has(id)) {
+          collapsedNodes.delete(id);
+        } else {
+          collapsedNodes.add(id);
+        }
+        renderOutline();
+      }
+
+      function showPlaceholder(text: string) {
+        while (body.firstChild) body.removeChild(body.firstChild);
+        const p = document.createElement('p');
+        p.className = 'outline-panel__placeholder';
+        p.textContent = text;
+        body.appendChild(p);
       }
 
       function showNoKeyPlaceholder() {
-        while (body.firstChild) body.removeChild(body.firstChild);
-
-        const p = document.createElement('p');
-        p.className = 'outline-panel__placeholder';
-        p.textContent = 'Add a Gemini API key to enable the outline.';
-        body.appendChild(p);
-
+        showPlaceholder('Add a Gemini API key to enable the outline.');
         const btn = document.createElement('button');
         btn.className = 'outline-settings-btn';
         btn.textContent = 'Open Settings';
@@ -396,28 +414,26 @@ export default defineContentScript({
         body.appendChild(btn);
       }
 
-      function scrollToNode(node: OutlineNode) {
-        const promptIndex = findFirstPromptIndex(node);
-        if (promptIndex === null) return;
-        scrollToPromptIndex(promptIndex);
+      // ── Navigation helpers ────────────────────────────────────────────────────
+
+      function scrollToFirst(cluster: Cluster) {
+        const idx =
+          cluster.subclusters[0]?.messageIndices[0] ??
+          cluster.messageIndices[0];
+        if (idx !== undefined) scrollToMessageIndex(idx);
       }
 
-      function scrollToPromptIndex(promptIndex: number) {
+      function scrollToMessageIndex(targetIndex: number) {
         const messages = parseMessages();
-        const target = messages.find((m) => m.index === promptIndex);
+        const target = messages.find((m) => m.index === targetIndex);
         target?.element.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }
 
-      function findFirstPromptIndex(node: OutlineNode): number | null {
-        if (node.promptIndices.length > 0) return node.promptIndices[0];
-        for (const childId of node.children) {
-          const child = index.nodes[childId];
-          if (child) {
-            const idx = findFirstPromptIndex(child);
-            if (idx !== null) return idx;
-          }
-        }
-        return null;
+      function countClusterMessages(cluster: Cluster): number {
+        const subCount = cluster.subclusters.reduce(
+          (n, sc) => n + sc.messageIndices.length, 0,
+        );
+        return subCount + cluster.messageIndices.length;
       }
     }
   },
