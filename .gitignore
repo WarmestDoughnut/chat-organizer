@@ -1,10 +1,13 @@
 node_modules/
 .output/
 .wxt/
+.DS_Store
+**/.DS_Store
 
 # Personal session logs — never commit
 WORKLOG.txt
 CLAUDE.md
+CHANGELOG.txt
 
 # Hard block on any env / secrets file — belt-and-suspenders
 .env

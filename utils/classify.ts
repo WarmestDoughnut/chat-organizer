@@ -1,4 +1,4 @@
-// classify.ts — two-mode classification using Gemini Flash.
+// classify.ts — two-mode classification (Gemini Flash or Ollama — routed in background.ts).
 //
 // batchClassify()       — called on "Analyze": sends all messages at once,
 //                         builds a fresh ConversationOutline from scratch.
@@ -24,7 +24,7 @@ export async function batchClassify(
 ): Promise<ConversationOutline> {
   const res = await sendToBackground({
     type: 'BATCH_CLASSIFY',
-    messages: messages.map((m) => ({ index: m.index, firstSentence: m.headingText })),
+    messages: messages.map((m) => ({ index: m.index, text: m.snippetText })),
   });
 
   if (!res.ok) throw new Error(`[classify] Batch failed: ${res.error}`);
@@ -64,11 +64,20 @@ export async function incrementalClassify(
 ): Promise<void> {
   const res = await sendToBackground({
     type: 'INCREMENTAL_CLASSIFY',
-    existingClusters: outline.clusters.map((c) => ({
-      label: c.label,
-      subclusters: c.subclusters.map((sc) => ({ label: sc.label })),
-    })),
-    newMessages: newMessages.map((m) => ({ index: m.index, firstSentence: m.headingText })),
+    existingClusters: outline.clusters.map((c) => {
+      const firstIdx = c.subclusters[0]?.messageIndices[0] ?? c.messageIndices[0];
+      return {
+        label: c.label,
+        example: firstIdx !== undefined ? outline.messages[firstIdx]?.firstSentence : undefined,
+        subclusters: c.subclusters.map((sc) => ({
+          label: sc.label,
+          example: sc.messageIndices[0] !== undefined
+            ? outline.messages[sc.messageIndices[0]]?.firstSentence
+            : undefined,
+        })),
+      };
+    }),
+    newMessages: newMessages.map((m) => ({ index: m.index, text: m.snippetText })),
   });
 
   if (!res.ok) throw new Error(`[classify] Incremental failed: ${res.error}`);

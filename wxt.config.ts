@@ -10,6 +10,9 @@ export default defineConfig({
     permissions: ['storage'],
     // Background script needs to fetch the Gemini API (CORS proxy pattern).
     // Content scripts cannot fetch external origins directly.
-    host_permissions: ['https://generativelanguage.googleapis.com/*'],
+    host_permissions: [
+      'https://generativelanguage.googleapis.com/*',
+      'http://localhost:11434/*',
+    ],
   },
 });

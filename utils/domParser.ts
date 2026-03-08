@@ -5,9 +5,29 @@
 export interface ParsedMessage {
   index: number;
   role: 'user' | 'assistant';
-  headingText: string; // first sentence, ≤120 chars — used for embedding
-  fullText: string;    // complete visible text — used for escalation scan
+  headingText: string;  // first sentence, ≤120 chars
+  fullText: string;     // complete visible text
+  snippetText: string;  // preprocessed + truncated — sent to classifier
   element: Element;
+}
+
+// Maximum chars sent to the classifier per message.
+const SNIPPET_MAX = 300;
+
+// Preprocess fullText into a compact, clean snippet for classification.
+// Pipeline: replace code blocks → strip markdown → strip filler openers →
+//           collapse whitespace → truncate.
+function buildSnippet(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, '[code]')          // fenced code blocks
+    .replace(/`[^`\n]+`/g, '[code]')               // inline code
+    .replace(/^#{1,6}\s+/gm, '')                   // ATX headings
+    .replace(/\*{1,2}([^*]+)\*{1,2}/g, '$1')       // bold / italic
+    .replace(/_{1,2}([^_]+)_{1,2}/g, '$1')         // underscore bold / italic
+    .replace(/^(Sure!?|Certainly!?|Absolutely!?|Great(?: question)?!?|Of course!?|Happy to help!?)\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, SNIPPET_MAX);
 }
 
 // Minimum visible text length (chars) for a message to earn a heading.
@@ -94,6 +114,7 @@ export function parseMessages(): ParsedMessage[] {
       role: 'assistant',
       headingText: extractFirstSentence(text),
       fullText: text,
+      snippetText: buildSnippet(text),
       element: el,
     });
   });
@@ -108,11 +129,14 @@ export function parseMessages(): ParsedMessage[] {
 //   • a <pre> block (code)
 //   • multiple action buttons (copy, retry, …)
 //   • a prose-rendered markdown wrapper
+//   • claude-specific response body classes (font-claude-response-body, standard-markdown)
 // User messages have none of these.
 function isLikelyAssistantTurn(el: Element): boolean {
   if (el.querySelector('pre') !== null) return true;
   if (el.querySelectorAll('button').length > 1) return true;
   if (el.querySelector('[class*="prose"]') !== null) return true;
+  if (el.querySelector('.font-claude-response-body') !== null) return true;
+  if (el.querySelector('.standard-markdown') !== null) return true;
   return false;
 }
 

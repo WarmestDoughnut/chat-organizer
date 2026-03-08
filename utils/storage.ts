@@ -15,6 +15,9 @@ export interface StoredConversation {
 
 export interface Settings {
   geminiApiKey: string;
+  provider: 'gemini' | 'ollama';
+  ollamaModel: string;
+  ollamaUrl: string;
 }
 
 // ── Keys ──────────────────────────────────────────────────────────────────────
@@ -39,6 +42,9 @@ export async function saveConversation(stored: StoredConversation): Promise<void
 
 const DEFAULT_SETTINGS: Settings = {
   geminiApiKey: '',
+  provider: 'gemini',
+  ollamaModel: 'qwen2.5:7b',
+  ollamaUrl: 'http://localhost:11434',
 };
 
 export async function loadSettings(): Promise<Settings> {

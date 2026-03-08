@@ -9,12 +9,16 @@ import type { BatchResult, IncrementalResult } from './outline';
 export type GeminiRequest =
   | {
       type: 'BATCH_CLASSIFY';
-      messages: Array<{ index: number; firstSentence: string }>;
+      messages: Array<{ index: number; text: string }>;
     }
   | {
       type: 'INCREMENTAL_CLASSIFY';
-      existingClusters: Array<{ label: string; subclusters: Array<{ label: string }> }>;
-      newMessages: Array<{ index: number; firstSentence: string }>;
+      existingClusters: Array<{
+        label: string;
+        example?: string;
+        subclusters: Array<{ label: string; example?: string }>;
+      }>;
+      newMessages: Array<{ index: number; text: string }>;
     }
   | { type: 'GEMINI_LIST_MODELS' };
 

@@ -125,8 +125,12 @@ export default defineContentScript({
       const collapsedNodes = new Set<string>();
 
       // ── Analyze button state ────────────────────────────────────────────────
+      function isConfigured(): boolean {
+        return settings.provider === 'ollama' || !!settings.geminiApiKey;
+      }
+
       function syncAnalyzeBtn() {
-        if (!settings.geminiApiKey) {
+        if (!isConfigured()) {
           analyzeBtn.textContent = '⚙ Key needed';
           analyzeBtn.disabled = true;
         } else if (analyzing) {
@@ -174,8 +178,11 @@ export default defineContentScript({
           console.error('[Chat Organizer] Batch classify error:', err);
           const msg = err?.message ?? String(err);
           const isQuota = msg.includes('429') || msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('exhausted');
+          const isOllamaDown = msg.toLowerCase().includes('ollama fetch error');
           showPlaceholder(
-            isQuota
+            isOllamaDown
+              ? 'Could not reach Ollama. Make sure it is running on your Mac.'
+              : isQuota
               ? 'Gemini API quota exceeded. The free tier resets daily — try again tomorrow or use a paid key.'
               : `Analysis failed: ${msg}`,
           );
@@ -190,7 +197,7 @@ export default defineContentScript({
       syncAnalyzeBtn();
       renderOutline();
 
-      if (!settings.geminiApiKey) {
+      if (!isConfigured()) {
         showNoKeyPlaceholder();
         return;
       }
@@ -251,9 +258,9 @@ export default defineContentScript({
 
         if (outline.clusters.length === 0) {
           showPlaceholder(
-            settings.geminiApiKey
+            isConfigured()
               ? 'Press ▶ Analyze to build the outline for this chat.'
-              : 'Add a Gemini API key to enable the outline.',
+              : 'Add a Gemini API key or configure Ollama to enable the outline.',
           );
           return;
         }
@@ -316,8 +323,9 @@ export default defineContentScript({
             }
           }
 
-          // Flat messages (cluster has no subclusters, or overflow messages)
-          if (hasFlatMessages) {
+          // Flat messages only when there are no subclusters — avoids duplicates
+          // when the model puts the same indices at both cluster and subcluster level.
+          if (!hasSubclusters && hasFlatMessages) {
             for (const idx of cluster.messageIndices) {
               children.appendChild(buildMessageItem(idx));
             }
@@ -413,7 +421,7 @@ export default defineContentScript({
       }
 
       function showNoKeyPlaceholder() {
-        showPlaceholder('Add a Gemini API key to enable the outline.');
+        showPlaceholder('Add a Gemini API key or switch to Ollama in Settings to enable the outline.');
         const btn = document.createElement('button');
         btn.className = 'outline-settings-btn';
         btn.textContent = 'Open Settings';
