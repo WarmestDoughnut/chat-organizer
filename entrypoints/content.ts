@@ -177,13 +177,16 @@ export default defineContentScript({
         } catch (err: any) {
           console.error('[Chat Organizer] Batch classify error:', err);
           const msg = err?.message ?? String(err);
-          const isQuota = msg.includes('429') || msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('exhausted');
+          const isQuota = (msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('exhausted') || msg.toLowerCase().includes('resource_exhausted')) && !msg.includes('400');
+          const isRateLimit = msg.includes('429') && !isQuota;
           const isOllamaDown = msg.toLowerCase().includes('ollama fetch error');
           showPlaceholder(
             isOllamaDown
               ? 'Could not reach Ollama. Make sure it is running on your Mac.'
               : isQuota
               ? 'Gemini API quota exceeded. The free tier resets daily — try again tomorrow or use a paid key.'
+              : isRateLimit
+              ? 'Gemini rate limit hit (too many requests per minute). Wait 60 seconds and try again.'
               : `Analysis failed: ${msg}`,
           );
         } finally {

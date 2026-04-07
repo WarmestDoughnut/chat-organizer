@@ -148,7 +148,7 @@ function OptionsApp() {
                 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">
                   Google AI Studio
                 </a>
-                . Uses <code>gemini-2.0-flash</code>. Free tier applies.
+                . Uses <code>gemini-2.5-flash-lite</code>. Free tier applies.
               </span>
             </label>
           </div>

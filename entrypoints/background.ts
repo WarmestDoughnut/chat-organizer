@@ -198,6 +198,7 @@ async function callGeminiFlash(
   }
   if (!res.ok) {
     const body = await res.text().catch(() => '');
+    console.error(`[Chat Organizer] Gemini ${res.status} error body:`, body);
     return { ok: false, error: `Gemini API ${res.status}: ${body}` };
   }
   const data = await res.json();

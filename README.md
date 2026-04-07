@@ -25,7 +25,7 @@ Claude produces genuinely long, structured responses. Over a working session the
 | Styles | Plain CSS, shadow DOM scoped | Zero bleed into host page styles |
 | Build | Vite 6 (via WXT) | Fast dev builds, `?inline` CSS imports for shadow DOM injection |
 | Language | TypeScript | Type-safe DOM references and message structs |
-| AI (cloud) | Gemini 2.0 Flash | Single batch call for full conversation clustering |
+| AI (cloud) | Gemini 2.5 Flash Lite | Single batch call for full conversation clustering |
 | AI (local) | Ollama (qwen2.5:7b) | Fully on-device, no data sent externally |
 
 ## Install locally
@@ -71,7 +71,9 @@ Open the extension settings by clicking the extension icon or pressing **⚙ Key
 2. In Settings, select **Gemini Flash (cloud)**
 3. Paste your key and click **Save settings**
 
-Free tier: ~1,500 requests/day, resets daily.
+Free tier: ~1,000 requests/day, 15 requests/minute. Resets daily at midnight Pacific.
+
+> **Model note:** Uses `gemini-2.5-flash-lite`. The older `gemini-2.0-flash` model has been deprecated by Google and has zero free-tier quota as of 2026 — do not use it.
 
 ### Option B — Ollama (local, fully private)
 

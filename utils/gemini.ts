@@ -39,4 +39,4 @@ export function sendToBackground(req: GeminiRequest): Promise<GeminiResponse> {
 // ── API endpoint ──────────────────────────────────────────────────────────────
 
 export const GEMINI_FLASH_URL =
-  'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+  'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent';
